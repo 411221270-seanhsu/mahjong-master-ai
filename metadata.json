@@ -1,0 +1,7 @@
+{
+  "name": "Mahjong Master AI",
+  "description": "AI-powered Taiwanese Mahjong assistant that analyzes your hand and board to provide strategic advice.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
