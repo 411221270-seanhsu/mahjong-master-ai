@@ -208,6 +208,124 @@ def calculate_ukeire(
     return ukeire
 
 
+# ── 防守邏輯 (Genbutsu / Suji) ─────────────────────────────────
+
+# Suji (筋牌) 對照表
+# 當某張牌出現在牌河中，與它形成「筋」關係的牌就較為安全。
+# 原理: 兩面聽 (Ryanmen) 的等待規律
+#   1-2-3 聽 -> 聽 1,4   => 4 在河裡 → 1 安全
+#   4-5-6 聽 -> 聽 4,7   => 4 在河裡 → 7 安全
+#   2-3-4 聽 -> 聽 2,5   => 5 在河裡 → 2 安全
+#   5-6-7 聽 -> 聽 5,8   => 5 在河裡 → 8 安全
+#   3-4-5 聽 -> 聽 3,6   => 6 在河裡 → 3 安全
+#   6-7-8 聽 -> 聽 6,9   => 6 在河裡 → 9 安全
+#
+# 格式: {牌河中的數字: [因此安全的數字]}
+SUJI_MAP = {
+    4: [1, 7],  # 4 在河裡 → 1, 7 安全
+    5: [2, 8],  # 5 在河裡 → 2, 8 安全
+    6: [3, 9],  # 6 在河裡 → 3, 9 安全
+    1: [4],     # 1 在河裡 → 4 半安全 (片筋)
+    2: [5],     # 2 在河裡 → 5 半安全
+    3: [6],     # 3 在河裡 → 6 半安全
+    7: [4],     # 7 在河裡 → 4 半安全
+    8: [5],     # 8 在河裡 → 5 半安全
+    9: [6],     # 9 在河裡 → 6 半安全
+}
+
+
+def analyze_safety(
+    tile_name: str,
+    visible_tiles_34: list[int] | None = None,
+) -> dict:
+    """
+    分析打出某張牌的安全度。
+
+    回傳:
+        {'status': 'genbutsu'|'suji'|'danger', 'level': 0|1|2}
+        level 越低越安全
+    """
+    if visible_tiles_34 is None:
+        return {'status': 'unknown', 'level': 2}
+
+    idx = tile_name_to_index(tile_name)
+    suit = tile_name[1]
+
+    # ── 1. Genbutsu (現物): 牌河裡已經有這張牌 → 絕對安全
+    if visible_tiles_34[idx] > 0:
+        return {'status': 'genbutsu', 'level': 0}
+
+    # ── 2. Suji (筋牌): 只適用於數牌 (萬/筒/索)，字牌不適用
+    if suit in ('m', 'p', 's'):
+        num = int(tile_name[0])
+        suit_offset = SUIT_OFFSET[suit]
+
+        # 檢查牌河中是否有能讓此牌「筋安全」的牌
+        for river_num, safe_nums in SUJI_MAP.items():
+            if num in safe_nums:
+                # river_num 對應的牌在牌河裡嗎？
+                river_idx = suit_offset + river_num - 1
+                if visible_tiles_34[river_idx] > 0:
+                    return {'status': 'suji', 'level': 1}
+
+    # ── 3. 字牌: 如果牌河有 2 張以上同張字牌 → 較安全 (不太可能是碰聽)
+    if suit == 'z':
+        if visible_tiles_34[idx] >= 2:
+            return {'status': 'suji', 'level': 1}
+
+    # ── 4. 預設: 危險
+    return {'status': 'danger', 'level': 2}
+
+
+# ── 攻守權衡 (Decision Weighting) ────────────────────────────
+
+# 進攻權重
+SHANTEN_WEIGHT = 1000.0   # 向聽數的權重 (低向聽遠比高進張重要)
+UKEIRE_WEIGHT = 1.0       # 進張數的權重
+
+# 防守懲罰 (依 safety level)
+DANGER_PENALTY_MAP = {
+    0: 0.0,     # genbutsu: 無懲罰
+    1: 10.0,    # suji:     小懲罰
+    2: 50.0,    # danger:   大懲罰
+}
+
+
+def calculate_final_score(
+    candidate: dict,
+    current_shanten: int,
+) -> float:
+    """
+    計算候選牌的最終分數 = 進攻分 - 防守懲罰。
+
+    動態調整:
+      - Tenpai (shanten <= 0): 全攻模式，防守懲罰歸零
+      - 一向聽 (shanten == 1): 標準模式
+      - 二向聽以上 (shanten >= 2): 防禦模式，懲罰加倍
+    """
+    # ── 進攻分數: 越低越好的 shanten 轉為越高越好的分數
+    attack_score = -candidate['shanten'] * SHANTEN_WEIGHT + candidate['ukeire'] * UKEIRE_WEIGHT
+
+    # ── 防守懲罰
+    safety_level = candidate.get('safety', {}).get('level', 2)
+    base_penalty = DANGER_PENALTY_MAP.get(safety_level, 50.0)
+
+    # 動態風險係數
+    if current_shanten <= 0:
+        # 聽牌了！全攻模式 (Zentsu) — 不考慮防守
+        risk_factor = 0.0
+    elif current_shanten == 1:
+        # 一向聽 — 標準模式
+        risk_factor = 1.0
+    else:
+        # 二向聽以上 — 防禦模式 (Betaori) — 加倍防守
+        risk_factor = 2.0
+
+    defense_penalty = base_penalty * risk_factor
+
+    return attack_score - defense_penalty
+
+
 def calculate_discard_candidates(
     tiles_34: list[int],
     tiles_list: list[str],
@@ -221,14 +339,16 @@ def calculate_discard_candidates(
     參數:
         visible_tiles_34: 場上可見牌的 34 陣列 (用於精準計算剩餘張數)
 
-    回傳: 排序後的候選列表
+    回傳: 按 final_score 降序排列的候選列表
     [
         {
             'discard': '3z',
             'shanten': 1,
             'ukeire': 8,
             'acceptingTiles': {'1m': 3, ...},
-            'quality': 'normal' | 'receding'
+            'quality': 'normal' | 'receding',
+            'safety': {'status': 'genbutsu', 'level': 0},
+            'finalScore': 990.0
         },
         ...
     ]
@@ -262,16 +382,25 @@ def calculate_discard_candidates(
 
         quality = 'normal' if new_shanten <= current_shanten else 'receding'
 
-        candidates.append({
+        # 防守分析: 這張牌打出去安不安全？
+        safety = analyze_safety(tile, visible_tiles_34)
+
+        candidate = {
             'discard': tile,
             'shanten': new_shanten,
             'ukeire': total_ukeire,
             'acceptingTiles': ukeire,
             'quality': quality,
-        })
+            'safety': safety,
+        }
 
-    # 排序: 向聽數升序 → 進張數降序
-    candidates.sort(key=lambda c: (c['shanten'], -c['ukeire']))
+        # 計算最終分數 (攻守結合)
+        candidate['finalScore'] = calculate_final_score(candidate, current_shanten)
+
+        candidates.append(candidate)
+
+    # 排序: final_score 降序 (分數越高越推薦)
+    candidates.sort(key=lambda c: -c['finalScore'])
 
     return candidates
 
