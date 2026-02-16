@@ -4,9 +4,10 @@ import { Aperture, ScanLine, Loader2, AlertCircle } from 'lucide-react';
 interface ScanningViewProps {
     onCapture: (imageData: string) => void;
     isAnalyzing: boolean;
+    isHidden?: boolean; // When true, hide UI overlays but keep camera running
 }
 
-const ScanningView: React.FC<ScanningViewProps> = ({ onCapture, isAnalyzing }) => {
+const ScanningView: React.FC<ScanningViewProps> = ({ onCapture, isAnalyzing, isHidden = false }) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [error, setError] = useState<string | null>(null);
@@ -60,84 +61,91 @@ const ScanningView: React.FC<ScanningViewProps> = ({ onCapture, isAnalyzing }) =
     }, [onCapture]);
 
     return (
-        <div className="relative w-full h-full flex flex-col items-center justify-center transition-all duration-500">
-            {/* Background: camera feed or black */}
-            <div className="absolute inset-0 overflow-hidden">
-                {error ? (
-                    <div className="flex flex-col items-center justify-center h-full text-red-400 z-10 relative">
-                        <AlertCircle className="w-10 h-10 mb-3" />
-                        <p className="text-sm mb-3">{error}</p>
-                        <button
-                            onClick={() => startCamera()}
-                            className="px-4 py-2 bg-white/10 rounded-lg hover:bg-white/20 text-white text-sm"
-                        >
-                            重試
-                        </button>
-                    </div>
-                ) : (
-                    <video
-                        ref={videoRef}
-                        autoPlay
-                        playsInline
-                        muted
-                        className={`w-full h-full object-cover transition-opacity duration-500 ${streamActive ? 'opacity-30' : 'opacity-0'
-                            }`}
-                    />
-                )}
-            </div>
+        <div className="absolute inset-0 w-full h-full overflow-hidden">
+            {/* Camera feed — always rendered */}
+            {error ? (
+                <div className="flex flex-col items-center justify-center h-full text-red-400 z-10 relative">
+                    <AlertCircle className="w-10 h-10 mb-3" />
+                    <p className="text-sm mb-3">{error}</p>
+                    <button
+                        onClick={() => startCamera()}
+                        className="px-4 py-2 bg-white/10 rounded-lg hover:bg-white/20 text-white text-sm"
+                    >
+                        重試
+                    </button>
+                </div>
+            ) : (
+                <video
+                    ref={videoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className={`w-full h-full object-cover transition-opacity duration-500 ${streamActive ? 'opacity-30' : 'opacity-0'
+                        }`}
+                />
+            )}
 
-            {/* Hidden canvas */}
+            {/* Hidden canvas for captures */}
             <canvas ref={canvasRef} className="hidden" />
 
-            {/* Scan line */}
-            <div className="scan-line animate-scan-down"></div>
+            {/* === UI Overlays (hidden when result is showing) === */}
+            {!isHidden && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center z-10">
+                    {/* Scan line */}
+                    <div className="scan-line animate-scan-down"></div>
 
-            {/* Targeting Frame */}
-            <div className="relative w-64 h-48 border border-white/20 rounded-lg flex flex-col items-center justify-center z-10">
-                {/* Corner brackets */}
-                <div className="absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 border-mj-gold"></div>
-                <div className="absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 border-mj-gold"></div>
-                <div className="absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 border-mj-gold"></div>
-                <div className="absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 border-mj-gold"></div>
+                    {/* Targeting Frame — bracket corners */}
+                    <div className="relative w-64 h-48 flex flex-col items-center justify-center">
+                        {/* Subtle inner border */}
+                        <div className="absolute inset-0 border border-white/10 rounded-lg"></div>
 
-                {!isAnalyzing && (
-                    <p className="text-xs text-mj-gold/80 font-mono tracking-widest animate-pulse">
-                        TARGET ACQUISITION...
-                    </p>
-                )}
+                        {/* Corner brackets */}
+                        <div className="absolute top-0 left-0 w-8 h-8 border-t-2 border-l-2 border-mj-gold rounded-tl-sm"></div>
+                        <div className="absolute top-0 right-0 w-8 h-8 border-t-2 border-r-2 border-mj-gold rounded-tr-sm"></div>
+                        <div className="absolute bottom-0 left-0 w-8 h-8 border-b-2 border-l-2 border-mj-gold rounded-bl-sm"></div>
+                        <div className="absolute bottom-0 right-0 w-8 h-8 border-b-2 border-r-2 border-mj-gold rounded-br-sm"></div>
 
-                {/* Loading overlay */}
-                {isAnalyzing && (
-                    <div className="absolute inset-0 bg-black/40 backdrop-blur-sm z-50 flex flex-col items-center justify-center rounded-lg">
-                        <Loader2 className="w-8 h-8 text-mj-gold animate-spin mb-2" />
-                        <span className="text-xs text-white font-mono">ANALYZING...</span>
-                    </div>
-                )}
-            </div>
+                        {/* Center text */}
+                        {!isAnalyzing && (
+                            <p className="text-xs text-mj-gold/80 font-mono tracking-widest animate-pulse">
+                                TARGET ACQUISITION...
+                            </p>
+                        )}
 
-            {/* Hint */}
-            <div className="mt-8 px-4 py-2 glass-panel rounded-full flex items-center gap-2 z-10">
-                <ScanLine className="w-4 h-4 text-emerald-400" />
-                <span className="text-xs text-white/80">請將手牌置於框線內</span>
-            </div>
-
-            {/* Capture Button */}
-            <div className="absolute bottom-12 z-10">
-                <button
-                    onClick={handleCapture}
-                    disabled={isAnalyzing || !streamActive}
-                    className="group relative flex items-center justify-center w-20 h-20 disabled:opacity-50"
-                >
-                    <div className="absolute inset-0 border-2 border-dashed border-mj-gold/30 rounded-full animate-[spin_8s_linear_infinite] group-hover:border-mj-gold/60 transition-colors"></div>
-                    <div className="relative w-16 h-16 bg-gradient-to-b from-mj-green to-black rounded-full border-2 border-mj-gold/80 shadow-[0_0_15px_rgba(240,192,64,0.3)] flex items-center justify-center active:scale-95 transition-transform">
-                        {isAnalyzing ? (
-                            <Loader2 className="w-8 h-8 text-mj-gold animate-spin" />
-                        ) : (
-                            <Aperture className="w-8 h-8 text-mj-gold" />
+                        {/* Loading overlay */}
+                        {isAnalyzing && (
+                            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm z-50 flex flex-col items-center justify-center rounded-lg">
+                                <Loader2 className="w-8 h-8 text-mj-gold animate-spin mb-2" />
+                                <span className="text-xs text-white font-mono">ANALYZING...</span>
+                            </div>
                         )}
                     </div>
-                </button>
-            </div>
+
+                    {/* Hint pill */}
+                    <div className="mt-8 px-4 py-2 glass-panel rounded-full flex items-center gap-2">
+                        <ScanLine className="w-4 h-4 text-emerald-400" />
+                        <span className="text-xs text-white/80">請將手牌置於框線內</span>
+                    </div>
+
+                    {/* Capture Button */}
+                    <div className="absolute bottom-12">
+                        <button
+                            onClick={handleCapture}
+                            disabled={isAnalyzing || !streamActive}
+                            className="group relative flex items-center justify-center w-20 h-20 disabled:opacity-50"
+                        >
+                            <div className="absolute inset-0 border-2 border-dashed border-mj-gold/30 rounded-full animate-[spin_8s_linear_infinite] group-hover:border-mj-gold/60 transition-colors"></div>
+                            <div className="relative w-16 h-16 bg-gradient-to-b from-mj-green to-black rounded-full border-2 border-mj-gold/80 shadow-[0_0_15px_rgba(240,192,64,0.3)] flex items-center justify-center active:scale-95 transition-transform">
+                                {isAnalyzing ? (
+                                    <Loader2 className="w-8 h-8 text-mj-gold animate-spin" />
+                                ) : (
+                                    <Aperture className="w-8 h-8 text-mj-gold" />
+                                )}
+                            </div>
+                        </button>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

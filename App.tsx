@@ -37,21 +37,19 @@ const App: React.FC = () => {
       {/* Header */}
       <Header />
 
-      {/* Main Content */}
-      <main className="relative z-10 flex-1 flex flex-col items-center justify-center w-full">
-        {appState === AppState.CAMERA_ACTIVE || appState === AppState.ANALYZING ? (
-          <ScanningView
-            onCapture={handleCapture}
-            isAnalyzing={appState === AppState.ANALYZING}
-          />
-        ) : appState === AppState.RESULT && result ? (
-          <ResultView result={result} onReset={resetAnalysis} />
-        ) : (
-          <div className="flex items-center justify-center h-full text-white">
-            <p>狀態錯誤</p>
-            <button onClick={resetAnalysis} className="ml-4 underline">
-              重置
-            </button>
+      {/* Main Content — Stacking Context */}
+      <main className="relative z-10 flex-1 w-full">
+        {/* Layer 1: Camera & Scanning (always rendered to keep stream alive) */}
+        <ScanningView
+          onCapture={handleCapture}
+          isAnalyzing={appState === AppState.ANALYZING}
+          isHidden={appState === AppState.RESULT}
+        />
+
+        {/* Layer 2: Result Overlay (stacks on top when ready) */}
+        {appState === AppState.RESULT && result && (
+          <div className="absolute inset-0 z-20 bg-black/60 backdrop-blur-sm">
+            <ResultView result={result} onReset={resetAnalysis} />
           </div>
         )}
       </main>
