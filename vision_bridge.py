@@ -1,16 +1,8 @@
 # 檔案: vision_bridge.py
-# 麻將 AI 視覺橋接器 — YOLO 辨識 + Node.js 牌效計算
+# 麻將 AI 視覺橋接器 — YOLO 辨識 + Python 牌效計算
 # ──────────────────────────────────────────────────────────────
 
-import subprocess
-import json
-import os
-
-# ── 設定 ──────────────────────────────────────────────────────
-JS_SCRIPT_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "mahjong_brain", "brain.js"
-)
+from mahjong_logic import calculate_decision
 
 
 # ── YOLO Class ID → 牌名 對照表 ─────────────────────────────
@@ -58,41 +50,24 @@ TILE_DISPLAY_NAME = {
 
 # ── 核心函式 ──────────────────────────────────────────────────
 
-def ask_brain_for_decision(tiles_list: list[str]) -> dict | None:
+def ask_brain_for_decision(
+    tiles_list: list[str],
+    visible_tiles: list[str] | None = None,
+) -> dict | None:
     """
-    呼叫 Node.js 牌效計算引擎。
+    呼叫 Python 牌效計算引擎 (mahjong_logic)。
 
-    輸入: ['1m', '2m', '3m', ...]  (16 或 17 張)
+    輸入:
+        tiles_list: ['1m', '2m', '3m', ...]  (16 或 17 張手牌)
+        visible_tiles: ['3z', '5m', ...] (場上可見的牌河/明牌)
     輸出: 計算結果 dict，或 None (失敗時)
-
-    回傳範例 (17 張 / 打牌階段):
-    {
-        "tileCount": 17,
-        "phase": "discarding",
-        "shanten": 1,
-        "bestDiscard": "3z",
-        "candidates": [
-            {"discard": "3z", "shanten": 1, "ukeire": 8, ...},
-            ...
-        ]
-    }
     """
-    tiles_str = " ".join(tiles_list)
-
     try:
-        result = subprocess.run(
-            ['node', JS_SCRIPT_PATH, tiles_str],
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            timeout=5  # 超過 5 秒就放棄
-        )
+        data = calculate_decision(tiles_list, visible_tiles)
 
-        if result.returncode != 0:
-            print(f"[Brain Error] stderr: {result.stderr.strip()}")
+        if data is None:
+            print("[Brain Error] calculate_decision returned None")
             return None
-
-        data = json.loads(result.stdout)
 
         if 'error' in data:
             print(f"[Brain Error] {data['error']}")
@@ -100,15 +75,6 @@ def ask_brain_for_decision(tiles_list: list[str]) -> dict | None:
 
         return data
 
-    except subprocess.TimeoutExpired:
-        print("[Brain Error] Node.js 計算超時")
-        return None
-    except json.JSONDecodeError as e:
-        print(f"[Brain Error] JSON 解析失敗: {e}")
-        return None
-    except FileNotFoundError:
-        print("[Brain Error] 找不到 node 指令，請確認 Node.js 已安裝")
-        return None
     except Exception as e:
         print(f"[Bridge Error] {e}")
         return None
@@ -116,7 +82,7 @@ def ask_brain_for_decision(tiles_list: list[str]) -> dict | None:
 
 def process_frame(frame, model) -> str:
     """
-    處理單一影格：YOLO 辨識 → 牌效計算 → 回傳建議字串。
+    處理單一影格：YOLO 辨識 → 空間分類 → 牌效計算 → 回傳建議字串。
 
     參數:
         frame: OpenCV 影像 (numpy ndarray)
@@ -127,8 +93,14 @@ def process_frame(frame, model) -> str:
     """
     # ── 1. YOLO 推論 ──
     results = model(frame)
+    frame_height = frame.shape[0]
 
-    detected_tiles = []
+    # 空間分界線：畫面下方 40% 為手牌區，上方 60% 為牌河/公開區
+    HAND_REGION_RATIO = 0.6
+    hand_boundary_y = frame_height * HAND_REGION_RATIO
+
+    hand_tiles = []      # 手牌
+    visible_tiles = []   # 場上可見牌 (牌河、明牌等)
 
     for box in results[0].boxes:
         cls_id = int(box.cls[0])
@@ -139,24 +111,37 @@ def process_frame(frame, model) -> str:
             continue
 
         tile_name = YOLO_MAP.get(cls_id)
-        if tile_name:
-            detected_tiles.append(tile_name)
+        if not tile_name:
+            continue
 
-    # ── 2. 張數檢查 ──
-    n = len(detected_tiles)
+        # 取得 bounding box 的中心 y 座標
+        # box.xyxy[0] = [x1, y1, x2, y2]
+        coords = box.xyxy[0]
+        center_y = (float(coords[1]) + float(coords[3])) / 2
+
+        if center_y > hand_boundary_y:
+            # 在下方 → 手牌
+            hand_tiles.append(tile_name)
+        else:
+            # 在上方 → 牌河/公開牌
+            visible_tiles.append(tile_name)
+
+    # ── 2. 張數檢查 (只檢查手牌) ──
+    n = len(hand_tiles)
     remainder = n % 3
 
     if remainder == 0 or n < 13:
-        return f"辨識中... (偵測到 {n} 張牌)"
+        vis_info = f", 場上: {len(visible_tiles)}張" if visible_tiles else ""
+        return f"辨識中... (手牌: {n}張{vis_info})"
 
-    # ── 3. 呼叫計算引擎 ──
-    decision = ask_brain_for_decision(detected_tiles)
+    # ── 3. 呼叫計算引擎 (傳入可見牌) ──
+    decision = ask_brain_for_decision(
+        hand_tiles,
+        visible_tiles if visible_tiles else None,
+    )
 
     if decision is None:
         return "計算失敗"
-
-    if 'error' in decision:
-        return f"計算錯誤: {decision['error']}"
 
     # ── 4. 格式化結果 ──
     shanten = decision.get('shanten', '?')
@@ -188,6 +173,7 @@ def process_frame(frame, model) -> str:
 
 # ── 獨立測試 ──────────────────────────────────────────────────
 if __name__ == '__main__':
+    import json
     import sys
     
     # 模式 1: 有輸入參數 -> 測試特定牌型
@@ -221,7 +207,7 @@ if __name__ == '__main__':
             
     # 模式 2: 無參數 -> 跑預設測試
     else:
-        print("💡 提示: 你可以輸入參數來測試特定手牌，例如:")
+        print("[Hint] You can test specific hands, for example:")
         print('   python vision_bridge.py "1m 1m 1m 2m 3m 4m 5m 6m 7m 8m 9m 1p 1p 1p 2p 2p"')
         
         test_hands = [
